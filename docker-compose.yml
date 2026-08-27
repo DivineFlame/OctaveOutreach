@@ -11,13 +11,18 @@ services:
       APP_PASSWORD: ${APP_PASSWORD:?Set APP_PASSWORD}
       APP_DISPLAY_NAME: ${APP_DISPLAY_NAME:-Workspace Owner}
       WORKSPACE_NAME: ${WORKSPACE_NAME:-Octave}
+      # Drafting model. Leave every key blank to run on deterministic templates only.
+      LLM_PROVIDER: ${LLM_PROVIDER:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-opus-5}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.4-mini}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
     depends_on:
       database:
         condition: service_healthy
+    # Dokploy/Traefik reaches the container over the shared network, so no host
+    # port is published. Set APP_PORT to publish one for local `docker compose up`.
     expose: ["3000"]
-    ports: ["${APP_PORT:-3000}:3000"]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
       interval: 30s

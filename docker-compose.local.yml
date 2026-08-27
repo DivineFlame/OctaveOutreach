@@ -1,0 +1,12 @@
+# Local development only. Publishes the app on the host so you can reach it at
+# http://localhost:3000 without a reverse proxy.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
+#
+# Dokploy uses docker-compose.yml alone and routes traffic through Traefik, so
+# this file is deliberately kept separate.
+services:
+  app:
+    ports: ["${APP_PORT:-3000}:3000"]
+  database:
+    ports: ["${POSTGRES_PORT:-5432}:5432"]

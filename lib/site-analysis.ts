@@ -1,7 +1,9 @@
 import dns from "node:dns/promises";
 import net from "node:net";
-import OpenAI from "openai";
-import type { CampaignAnalysis, Channel } from "./types";
+import { z } from "zod";
+import { generateJson } from "./llm";
+import { buildXrayStrings } from "./xray";
+import type { CampaignAnalysis } from "./types";
 
 const MAX_PAGE_BYTES = 1_000_000;
 const MAX_REDIRECTS = 3;
@@ -90,61 +92,36 @@ function fallbackAnalysis(website: string, title: string, description: string): 
     buyerSegments: ["Procurement and sourcing teams", "Founders and business owners", "Operations and product leaders"],
     valuePropositions: ["Direct, specification-led business conversation", "Flexible commercial engagement", "Documented and reviewable outreach"],
     pitch: `${company} helps business buyers evaluate relevant products and services through a clear, consultative process. We would be glad to understand your current requirements and share the most relevant capabilities, documentation and next steps.`,
-    xrayStrings: [
-      `site:linkedin.com/in \"${company}\" (procurement OR purchase OR sourcing)`,
-      `site:linkedin.com/in \"${company}\" (founder OR director OR operations)`,
-      `site:linkedin.com/company \"${company}\"`,
-    ],
+    xrayStrings: buildXrayStrings("linkedin", { market: "", roles: [], keywords: [company] }).map((entry) => entry.query),
   };
 }
 
+const analysisSchema = z.object({
+  summary: z.string(),
+  products: z.array(z.string()).min(1).max(10),
+  buyerSegments: z.array(z.string()).min(1).max(8),
+  valuePropositions: z.array(z.string()).min(1).max(8),
+  pitch: z.string(),
+  xrayStrings: z.array(z.string()).min(3).max(10),
+});
+
+const ANALYSIS_INSTRUCTIONS = `You are a precise B2B sales strategist. Analyse only the supplied website text.
+Do not invent certifications, clients, contact details, prices or claims.
+Keep outputs commercially useful and concise.
+For xrayStrings, return Google X-Ray search strings that would surface procurement managers, purchase managers, sourcing leads, founders and R&D contacts at companies likely to buy these products — use site: operators and quoted phrases.`;
+
+/**
+ * Fetch and analyse a prospect's own website. Falls back to a deterministic
+ * summary when no model key is configured, so campaign creation always succeeds.
+ */
 export async function analyseWebsite(website: string): Promise<CampaignAnalysis> {
   const { html, finalUrl } = await fetchPublicPage(website);
   const page = extractPage(html);
-  if (!process.env.OPENAI_API_KEY) return fallbackAnalysis(finalUrl, page.title, page.description);
-
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  const response = await openai.responses.create({
-    model: process.env.OPENAI_MODEL ?? "gpt-5.4-mini",
-    store: false,
-    instructions: "You are a precise B2B sales strategist. Analyse only the supplied website text. Do not invent certifications, clients, contact details or claims. Keep outputs commercially useful and concise.",
+  const analysis = await generateJson({
+    schema: analysisSchema,
+    instructions: ANALYSIS_INSTRUCTIONS,
     input: `Website: ${finalUrl}\nTitle: ${page.title}\nDescription: ${page.description}\nVisible text:\n${page.text}`,
-    text: {
-      format: {
-        type: "json_schema",
-        name: "campaign_analysis",
-        strict: true,
-        schema: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            summary: { type: "string" },
-            products: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 10 },
-            buyerSegments: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 8 },
-            valuePropositions: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 8 },
-            pitch: { type: "string" },
-            xrayStrings: { type: "array", items: { type: "string" }, minItems: 3, maxItems: 10 },
-          },
-          required: ["summary", "products", "buyerSegments", "valuePropositions", "pitch", "xrayStrings"],
-        },
-      },
-    },
+    maxTokens: 4_000,
   });
-  return JSON.parse(response.output_text) as CampaignAnalysis;
-}
-
-export function buildDraft(channel: Channel, companyName: string, analysis: CampaignAnalysis) {
-  const hook = analysis.valuePropositions[0] ?? "a relevant business opportunity";
-  const product = analysis.products[0] ?? "our capabilities";
-  const base = `I’m reaching out from ${companyName}. We help business teams with ${product.toLowerCase()} and ${hook.toLowerCase()}. I’d be glad to understand your current priorities and share the most relevant information.`;
-  const channelDrafts: Record<Channel, { type: "connection" | "email" | "message" | "post" | "video"; subject: string; body: string }> = {
-    linkedin: { type: "connection", subject: "", body: `${base} Open to connecting?` },
-    email: { type: "email", subject: `Exploring a potential fit with ${companyName}`, body: `Hello,\n\n${base}\n\nWould a brief introduction and capability summary be useful?\n\nRegards` },
-    whatsapp: { type: "message", subject: "", body: `Hello — ${base} May I share a short business brochure?` },
-    instagram: { type: "message", subject: "", body: `Hi! I came across your brand and wanted to introduce ${companyName}. ${base}` },
-    facebook: { type: "message", subject: "", body: `Hello, ${base} Please let me know the best person to speak with.` },
-    x: { type: "message", subject: "", body: `Hi — ${base}` },
-    youtube: { type: "video", subject: `${companyName}: buyer guide`, body: `Video outline\n\n1. The buyer problem\n2. What to evaluate\n3. ${product}\n4. Documentation and next steps\n5. Invitation to discuss requirements` },
-  };
-  return channelDrafts[channel];
+  return analysis ?? fallbackAnalysis(finalUrl, page.title, page.description);
 }
