@@ -32,11 +32,22 @@ export interface Lead {
   company: string;
   contactName: string;
   role: string;
+  companyDomain: string;
+  industry: string;
+  location: string;
+  email: string;
+  phone: string;
   channel: Channel;
   profileUrl: string;
   sourceUrl: string;
   status: string;
   priority: "A" | "B" | "C";
+  verificationStatus: "unverified" | "verified" | "invalid" | "risky";
+  verificationSource: string;
+  consentStatus: "unknown" | "legitimate_interest" | "consented" | "opted_out";
+  doNotContact: boolean;
+  notes: string;
+  discoveredAt: string;
   createdAt: string;
   updatedAt: string;
 }

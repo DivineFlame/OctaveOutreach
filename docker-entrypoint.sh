@@ -7,4 +7,5 @@ until node scripts/migrate.mjs; do
   echo "Database is not ready; retrying migration in 5 seconds ($attempt/$max_attempts)."
   attempt=$((attempt + 1)); sleep 5
 done
+node scripts/bootstrap.mjs
 exec "$@"

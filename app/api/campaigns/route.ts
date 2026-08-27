@@ -2,11 +2,15 @@ import { NextResponse } from "next/server";
 import { getSql, jsonParam } from "@/lib/db";
 import { analyseWebsite, buildDraft } from "@/lib/site-analysis";
 import { campaignInputSchema } from "@/lib/validation";
+import { authenticateRequest, forbidden, hasRole, unauthorized } from "@/lib/auth";
 
 export const maxDuration = 60;
 
 export async function POST(request: Request) {
   try {
+    const auth = await authenticateRequest(request);
+    if (!auth) return unauthorized();
+    if (!hasRole(auth, ["owner", "admin", "researcher"])) return forbidden();
     const input = campaignInputSchema.parse(await request.json());
     const analysis = await analyseWebsite(input.website);
     const id = crypto.randomUUID();
@@ -14,14 +18,14 @@ export async function POST(request: Request) {
     const sql = getSql();
     const drafts = input.channels.map((channel) => ({ id: crypto.randomUUID(), channel, ...buildDraft(channel, input.name, analysis) }));
     await sql.begin(async (tx) => {
-      await tx`INSERT INTO campaigns (id, name, website, market, lead_goal, channels, status, analysis)
-        VALUES (${id}, ${input.name}, ${input.website}, ${input.market}, ${input.leadGoal}, ${tx.json(jsonParam(input.channels))}, 'ready', ${tx.json(jsonParam(analysis))})`;
+      await tx`INSERT INTO campaigns (id, workspace_id, name, website, market, lead_goal, channels, status, analysis)
+        VALUES (${id}, ${auth.workspaceId}, ${input.name}, ${input.website}, ${input.market}, ${input.leadGoal}, ${tx.json(jsonParam(input.channels))}, 'ready', ${tx.json(jsonParam(analysis))})`;
       for (const draft of drafts) {
-        await tx`INSERT INTO drafts (id, campaign_id, channel, type, subject, body, status)
-          VALUES (${draft.id}, ${id}, ${draft.channel}, ${draft.type}, ${draft.subject}, ${draft.body}, 'needs_review')`;
+        await tx`INSERT INTO drafts (id, workspace_id, campaign_id, channel, type, subject, body, status)
+          VALUES (${draft.id}, ${auth.workspaceId}, ${id}, ${draft.channel}, ${draft.type}, ${draft.subject}, ${draft.body}, 'needs_review')`;
       }
-      await tx`INSERT INTO activity_log (entity_type, entity_id, action, metadata)
-        VALUES ('campaign', ${id}, 'created', ${tx.json(jsonParam({ website: input.website, channels: input.channels }))})`;
+      await tx`INSERT INTO activity_log (workspace_id, actor_user_id, entity_type, entity_id, action, metadata)
+        VALUES (${auth.workspaceId}, ${auth.userId}, 'campaign', ${id}, 'created', ${tx.json(jsonParam({ website: input.website, channels: input.channels }))})`;
     });
     return NextResponse.json({
       campaign: { ...input, id, status: "ready", analysis, createdAt: now, updatedAt: now },

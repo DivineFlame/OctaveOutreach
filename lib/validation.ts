@@ -29,3 +29,8 @@ export const settingsSchema = z.object({
   publicDataOnly: z.boolean(),
   signature: z.string().max(1000),
 });
+
+export const loginSchema = z.object({
+  username: z.string().trim().toLowerCase().min(3).max(120),
+  password: z.string().min(12).max(256),
+});

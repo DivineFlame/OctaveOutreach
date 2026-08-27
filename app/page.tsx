@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import type { Campaign, Channel, Draft, DraftStatus, WorkspaceData, WorkspaceSettings } from "@/lib/types";
+import { useRouter } from "next/navigation";
 
 const channels: { id: Channel; label: string; short: string }[] = [
   { id: "linkedin", label: "LinkedIn", short: "in" }, { id: "email", label: "Email", short: "@" },
@@ -15,11 +16,13 @@ type View = "campaigns" | "drafts" | "leads" | "settings";
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...init, headers: { "Content-Type": "application/json", ...init?.headers } });
   const result = await response.json().catch(() => ({}));
+  if (response.status === 401 && typeof window !== "undefined") { window.location.replace("/login"); throw new Error("Session expired"); }
   if (!response.ok) throw new Error(result.error || `Request failed (${response.status})`);
   return result;
 }
 
 export default function Home() {
+  const router = useRouter();
   const [view, setView] = useState<View>("campaigns");
   const [data, setData] = useState<WorkspaceData>({ campaigns: [], drafts: [], leads: [], settings: emptySettings });
   const [selectedCampaign, setSelectedCampaign] = useState("");
@@ -48,10 +51,11 @@ export default function Home() {
     try { await api("/api/workspace", { method: "PUT", body: JSON.stringify(settings) }); setData((current) => ({ ...current, settings })); flash("Workspace settings saved."); }
     catch (err) { setError(err instanceof Error ? err.message : "Could not save settings"); } finally { setBusy(false); }
   }
+  async function signOut() { await fetch("/api/auth/logout", { method: "POST" }); router.push("/login"); router.refresh(); }
   const nav: { id: View; label: string; short: string; count?: number }[] = [{ id: "campaigns", label: "Campaigns", short: "C", count: data.campaigns.length }, { id: "drafts", label: "Drafts", short: "D", count: data.drafts.filter((d) => d.status === "needs_review").length }, { id: "leads", label: "Leads", short: "L", count: data.leads.length }];
   return <main className="app-shell">
     <aside className="sidebar"><div className="brand-mark">OA</div><nav aria-label="Primary navigation">{nav.map((item) => <button key={item.id} className={`nav-item ${view === item.id ? "active" : ""}`} onClick={() => setView(item.id)} title={item.label}><span>{item.short}</span>{item.count ? <b>{item.count}</b> : null}</button>)}</nav><button className={`nav-item settings ${view === "settings" ? "active" : ""}`} onClick={() => setView("settings")} title="Settings"><span>S</span></button></aside>
-    <section className="workspace"><header className="topbar"><div><p className="eyebrow">Outreach agent</p><h1>{view === "campaigns" ? "Campaign studio" : view[0].toUpperCase() + view.slice(1)}</h1></div><div className="safe-mode"><span /> Manual send mode</div></header>
+    <section className="workspace"><header className="topbar"><div><p className="eyebrow">Outreach agent</p><h1>{view === "campaigns" ? "Campaign studio" : view[0].toUpperCase() + view.slice(1)}</h1></div><div className="top-actions"><div className="safe-mode"><span /> Manual send mode</div><button className="logout-button" onClick={signOut}>Sign out</button></div></header>
       {error && <div className="alert error" role="alert">{error}<button onClick={() => setError("")}>×</button></div>}{notice && <div className="alert success" role="status">{notice}</div>}{loading && <div className="loading-card">Loading secure workspace…</div>}
       {!loading && view === "campaigns" && <Campaigns data={data} campaign={campaign} selectedCampaign={selectedCampaign} setSelectedCampaign={setSelectedCampaign} createCampaign={createCampaign} busy={busy} />}
       {!loading && view === "drafts" && <Drafts drafts={data.drafts} leads={data.leads} busy={busy} updateDraft={updateDraft} />}
