@@ -134,9 +134,12 @@ export const draftPatchSchema = z.object({
   followUpDays: z.coerce.number().int().min(1).max(180).optional(),
 });
 
+/** Caps how many leads one generate-drafts call can fan model calls out to. */
+export const MAX_GENERATE_LEADS = 40;
+
 export const draftGenerateSchema = z.object({
   campaignId: z.string().min(1),
-  leadIds: z.array(z.string().min(1)).min(1).max(40),
+  leadIds: z.array(z.string().min(1)).min(1).max(MAX_GENERATE_LEADS),
   channels: z.array(z.enum(CHANNELS)).min(1),
   types: z.array(z.enum(DRAFT_TYPES)).optional(),
   /** Replace existing drafts of the same channel and type instead of skipping. */

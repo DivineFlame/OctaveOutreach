@@ -2,9 +2,9 @@ import { NextResponse } from "next/server";
 import { getSql, jsonParam } from "@/lib/db";
 import { draftGenerateSchema, draftPatchSchema, settingsSchema, type DraftAction } from "@/lib/validation";
 import { toCampaign, toDraft, toLead } from "@/lib/mappers";
-import { planDrafts } from "@/lib/drafting";
+import { GUARDED_TYPES, looksGeneric, planDrafts } from "@/lib/drafting";
 import { channelGate } from "@/lib/channels";
-import { DEFAULT_SETTINGS, type Channel, type DraftStatus, type EmailStage } from "@/lib/types";
+import { DEFAULT_SETTINGS, type Channel, type DraftStatus, type DraftType, type EmailStage } from "@/lib/types";
 import { authenticateRequest, forbidden, hasRole, unauthorized, type AuthContext, type WorkspaceRole } from "@/lib/auth";
 
 /** Actions that put a message in front of (or in the hands of) the prospect — the compliance gate must hold for these. */
@@ -69,14 +69,32 @@ export async function PATCH(request: Request) {
     const [existing] = await sql`SELECT * FROM drafts WHERE id = ${input.id} AND workspace_id = ${auth.workspaceId}`;
     if (!existing) return NextResponse.json({ error: "Draft not found" }, { status: 404 });
 
+    // Both checks below need the lead behind the draft — fetch it once.
+    const needsGateCheck = GATED_ACTIONS.includes(input.action);
+    const needsGuardCheck =
+      input.action === "save" && input.body !== undefined && GUARDED_TYPES.includes(existing.type as DraftType);
+    const leadRow =
+      (needsGateCheck || needsGuardCheck) && existing.lead_id
+        ? (await sql`SELECT * FROM leads WHERE id = ${existing.lead_id} AND workspace_id = ${auth.workspaceId}`)[0]
+        : undefined;
+    const gateLead = leadRow ? toLead(leadRow) : undefined;
+
     // The UI only disables Approve/Mark sent when the gate blocks a lead — enforce
     // it here too, since a stale panel or a direct call must not bypass it.
-    if (GATED_ACTIONS.includes(input.action) && existing.lead_id) {
-      const [leadRow] = await sql`SELECT * FROM leads WHERE id = ${existing.lead_id} AND workspace_id = ${auth.workspaceId}`;
-      const gate = leadRow ? channelGate(toLead(leadRow), existing.channel as Channel) : null;
-      if (gate && !gate.allowed) {
+    if (needsGateCheck && gateLead) {
+      const gate = channelGate(gateLead, existing.channel as Channel);
+      if (!gate.allowed) {
         return NextResponse.json({ error: `Blocked: ${gate.reason}` }, { status: 409 });
       }
+    }
+
+    // The personalisation guard must hold for a human's hand-edit too, not just
+    // the model's rewrite — otherwise saving a draft is a free bypass.
+    if (needsGuardCheck && looksGeneric(input.body!, gateLead)) {
+      return NextResponse.json(
+        { error: "This reads as generic filler — reference something specific about the prospect before saving." },
+        { status: 400 },
+      );
     }
 
     const status: DraftStatus =

@@ -10,6 +10,7 @@ import {
   type Channel,
   type Lead,
 } from "@/lib/types";
+import { MAX_GENERATE_LEADS } from "@/lib/validation";
 import { api, type ViewProps } from "../page";
 import { ChannelBadge, Empty } from "./ui";
 import XrayBuilder from "./xray";
@@ -121,7 +122,14 @@ export default function LeadsView({ data, busy, refresh, run, flash, go }: ViewP
   const allSelected = leads.length > 0 && selected.length === leads.length;
 
   const toggle = (id: string) =>
-    setSelected((current) => (current.includes(id) ? current.filter((value) => value !== id) : [...current, id]));
+    setSelected((current) => {
+      if (current.includes(id)) return current.filter((value) => value !== id);
+      if (current.length >= MAX_GENERATE_LEADS) {
+        flash(`You can generate drafts for at most ${MAX_GENERATE_LEADS} leads at a time`);
+        return current;
+      }
+      return [...current, id];
+    });
 
   async function importFile() {
     const file = fileRef.current?.files?.[0];
@@ -258,7 +266,16 @@ export default function LeadsView({ data, busy, refresh, run, flash, go }: ViewP
                     <input
                       type="checkbox"
                       checked={allSelected}
-                      onChange={(event) => setSelected(event.target.checked ? leads.map((lead) => lead.id) : [])}
+                      onChange={(event) => {
+                        if (!event.target.checked) {
+                          setSelected([]);
+                          return;
+                        }
+                        setSelected(leads.slice(0, MAX_GENERATE_LEADS).map((lead) => lead.id));
+                        if (leads.length > MAX_GENERATE_LEADS) {
+                          flash(`Selected the first ${MAX_GENERATE_LEADS} leads — generate the rest in a second batch`);
+                        }
+                      }}
                     />
                   </th>
                   <th>Priority</th>

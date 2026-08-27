@@ -1,4 +1,4 @@
-import { CHANNEL_META, channelGate, draftTypeLabel, whatsappDigits } from "./channels";
+import { CHANNEL_META, channelGate, draftTypeLabel } from "./channels";
 import { generateJson } from "./llm";
 import { z } from "zod";
 import {
@@ -52,8 +52,12 @@ export function trimTo(text: string, limit: number) {
   const sentenceEnd = Math.max(window.lastIndexOf(". "), window.lastIndexOf("? "), window.lastIndexOf("! "));
   if (sentenceEnd > limit * 0.5) return window.slice(0, sentenceEnd + 1).trim();
   const wordEnd = window.lastIndexOf(" ");
-  return `${window.slice(0, wordEnd > 0 ? wordEnd : limit).trim()}…`;
+  // Reserve one character for the ellipsis so the result never exceeds `limit`.
+  return `${window.slice(0, wordEnd > 0 ? wordEnd : limit - 1).trim()}…`;
 }
+
+/** Draft types where the personalisation guard is mandatory, not advisory. */
+export const GUARDED_TYPES: DraftType[] = ["public_comment", "public_reply"];
 
 const GENERIC_COMMENT_PATTERNS = [
   /check\s*(your\s*)?dm/i,
@@ -74,12 +78,16 @@ export function looksGeneric(body: string, lead?: Pick<Lead, "company" | "indust
   if (text.length < 40) return true;
   if (GENERIC_COMMENT_PATTERNS.some((pattern) => pattern.test(text))) return true;
   if (!lead) return false;
-  const specifics = [lead.company, lead.industry, ...lead.notes.split(/[\s,.;]+/)]
-    .map((token) => token.trim().toLowerCase())
-    .filter((token) => token.length > 4);
-  if (!specifics.length) return false;
+  // The company name is always a valid specific, however short (e.g. "Glow");
+  // industry and notes tokens are only trusted once long enough to avoid
+  // matching common words.
+  const company = lead.company.trim().toLowerCase();
+  const specifics = [company, ...[lead.industry, ...lead.notes.split(/[\s,.;]+/)].map((token) => token.trim().toLowerCase()).filter((token) => token.length > 4)];
+  const candidates = specifics.filter(Boolean);
+  // Nothing to verify the copy against — treat it as generic rather than trust it blindly.
+  if (!candidates.length) return true;
   const lower = text.toLowerCase();
-  return !specifics.some((token) => lower.includes(token));
+  return !candidates.some((token) => lower.includes(token));
 }
 
 const DEFAULT_COLLATERAL_NAMES: Record<Collateral["kind"], string> = {
@@ -429,20 +437,17 @@ function templateBody(type: DraftType, ctx: DraftContext): { subject: string; bo
 
 /**
  * Whether a lead may be drafted for a channel, and at what starting status.
- * WhatsApp is the only channel that produces a held draft: the spec allows
- * preparing the message while consent is pending, but never for a personal or
- * unverified number.
+ * Delegates every rule to channelGate — the single source of truth for
+ * compliance — and only maps its outcome to a draft status. WhatsApp's
+ * "waiting for consent" code is the one case that still produces a held draft
+ * (the spec allows preparing the message while consent is pending); every
+ * other block skips drafting entirely.
  */
 function draftingGate(lead: Lead, channel: Channel): { skip: boolean; status: DraftStatus } {
-  if (lead.doNotContact || lead.consentStatus === "opted_out") return { skip: true, status: "held" };
-  if (channel === "whatsapp") {
-    if (!whatsappDigits(lead.phone) || lead.whatsappNumberType === "personal_unverified") {
-      return { skip: true, status: "held" };
-    }
-    const gate = channelGate(lead, channel);
-    return { skip: false, status: gate.allowed ? "needs_review" : "waiting_consent" };
-  }
-  return channelGate(lead, channel).allowed ? { skip: false, status: "needs_review" } : { skip: true, status: "held" };
+  const gate = channelGate(lead, channel);
+  if (gate.allowed) return { skip: false, status: "needs_review" };
+  if (gate.code === "whatsapp_consent_unknown") return { skip: false, status: "waiting_consent" };
+  return { skip: true, status: "held" };
 }
 
 const rewriteSchema = z.object({
@@ -520,7 +525,7 @@ async function rewriteWithModel(plans: DraftPlan[], ctx: DraftContext): Promise<
     const improved = byKey.get(`${plan.channel}:${plan.type}`);
     if (!improved?.body?.trim()) return plan;
     // Personalisation is mandatory for public comments and replies.
-    if ((plan.type === "public_comment" || plan.type === "public_reply") && looksGeneric(improved.body, ctx.lead)) {
+    if (GUARDED_TYPES.includes(plan.type) && looksGeneric(improved.body, ctx.lead)) {
       return plan;
     }
     return {

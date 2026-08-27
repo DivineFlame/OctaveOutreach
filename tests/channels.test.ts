@@ -41,7 +41,7 @@ describe("channelGate", () => {
     const dnc = makeLead({ doNotContact: true, doNotContactReason: "Asked to be removed" });
     const optedOut = makeLead({ consentStatus: "opted_out" });
     for (const channel of CHANNELS) {
-      expect(channelGate(dnc, channel)).toEqual({ allowed: false, reason: "Asked to be removed" });
+      expect(channelGate(dnc, channel)).toEqual({ allowed: false, reason: "Asked to be removed", code: "do_not_contact" });
       expect(channelGate(optedOut, channel).allowed).toBe(false);
     }
   });
@@ -54,6 +54,7 @@ describe("channelGate", () => {
     expect(channelGate(makeLead({ email: "" }), "email")).toEqual({
       allowed: false,
       reason: "No email address on file",
+      code: "no_email",
     });
   });
 

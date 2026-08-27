@@ -199,10 +199,23 @@ export function openPlatformUrl(
   }
 }
 
+/** Machine-readable reason a gate is blocked, so callers can branch on it without string-matching `reason`. */
+export type ChannelGateCode =
+  | "ok"
+  | "do_not_contact"
+  | "opted_out"
+  | "no_email"
+  | "no_whatsapp_number"
+  | "whatsapp_personal_unverified"
+  | "whatsapp_unclassified"
+  | "whatsapp_consent_unknown"
+  | "no_profile";
+
 export interface ChannelGate {
   allowed: boolean;
   /** Why the channel is blocked, or the consent basis when it is allowed. */
   reason: string;
+  code: ChannelGateCode;
 }
 
 /**
@@ -218,34 +231,47 @@ const PROFILE_REQUIRED: Channel[] = ["instagram", "facebook", "x"];
  */
 export function channelGate(lead: Lead, channel: Channel): ChannelGate {
   if (lead.doNotContact) {
-    return { allowed: false, reason: lead.doNotContactReason || "Marked Do Not Contact" };
+    return { allowed: false, reason: lead.doNotContactReason || "Marked Do Not Contact", code: "do_not_contact" };
   }
   if (lead.consentStatus === "opted_out") {
-    return { allowed: false, reason: "Contact has opted out" };
+    return { allowed: false, reason: "Contact has opted out", code: "opted_out" };
   }
   if (channel === "email" && !lead.email) {
-    return { allowed: false, reason: "No email address on file" };
+    return { allowed: false, reason: "No email address on file", code: "no_email" };
   }
   if (channel === "whatsapp") {
     if (!whatsappDigits(lead.phone)) {
-      return { allowed: false, reason: "No WhatsApp number on file" };
+      return { allowed: false, reason: "No WhatsApp number on file", code: "no_whatsapp_number" };
     }
     if (lead.whatsappNumberType === "personal_unverified") {
-      return { allowed: false, reason: "Personal or unverified number — cold messaging is not permitted" };
+      return {
+        allowed: false,
+        reason: "Personal or unverified number — cold messaging is not permitted",
+        code: "whatsapp_personal_unverified",
+      };
     }
     if (lead.whatsappNumberType === "unknown") {
-      return { allowed: false, reason: "Classify the number as a published business or professional number first" };
+      return {
+        allowed: false,
+        reason: "Classify the number as a published business or professional number first",
+        code: "whatsapp_unclassified",
+      };
     }
     if (lead.consentStatus === "unknown") {
       return {
         allowed: false,
         reason: "Record how this contact opted in (published number, enquiry, reply or event)",
+        code: "whatsapp_consent_unknown",
       };
     }
-    return { allowed: true, reason: lead.consentBasis || `Consent: ${lead.consentStatus.replaceAll("_", " ")}` };
+    return {
+      allowed: true,
+      reason: lead.consentBasis || `Consent: ${lead.consentStatus.replaceAll("_", " ")}`,
+      code: "ok",
+    };
   }
   if (!PROFILE_REQUIRED.includes(channel) || profileFor(lead, channel)) {
-    return { allowed: true, reason: "Public business information" };
+    return { allowed: true, reason: "Public business information", code: "ok" };
   }
-  return { allowed: false, reason: `No ${channelLabel(channel)} profile stored` };
+  return { allowed: false, reason: `No ${channelLabel(channel)} profile stored`, code: "no_profile" };
 }

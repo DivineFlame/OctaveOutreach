@@ -83,11 +83,13 @@ export default function SettingsView({ data, busy, refresh, run }: ViewProps) {
             </label>
             <label className="field-row">
               <span>Daily draft limit</span>
-              <input type="number" min={1} max={200} value={values.dailyDraftLimit} onChange={(event) => set("dailyDraftLimit", Number(event.target.value))} />
+              {/* Matches settingsSchema.dailyDraftLimit in lib/validation.ts — keep these caps in sync. */}
+              <input type="number" min={1} max={100} value={values.dailyDraftLimit} onChange={(event) => set("dailyDraftLimit", Number(event.target.value))} />
             </label>
             <label className="field-row">
               <span>Follow-up after (days)</span>
-              <input type="number" min={1} max={180} value={values.followUpDays} onChange={(event) => set("followUpDays", Number(event.target.value))} />
+              {/* Matches settingsSchema.followUpDays in lib/validation.ts — keep these caps in sync. */}
+              <input type="number" min={1} max={60} value={values.followUpDays} onChange={(event) => set("followUpDays", Number(event.target.value))} />
             </label>
           </div>
           <label className="toggle-row">

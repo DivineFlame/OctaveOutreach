@@ -213,17 +213,27 @@ function DraftPanel({ draft, lead, settings, busy, refresh, run, flash, onClose 
   }
 
   const meta = CHANNEL_META[draft.channel];
-  const gate = lead ? channelGate(lead, draft.channel) : { allowed: true, reason: "Channel content" };
+  const gate = lead ? channelGate(lead, draft.channel) : { allowed: true, reason: "Channel content", code: "ok" as const };
   const dirty = subject !== draft.subject || body !== draft.body;
   const platformUrl = lead ? openPlatformUrl(lead, draft.channel, { subject, body }, mailClient) : "";
   const message = draft.channel === "email" && subject ? `${subject}\n\n${body}` : body;
 
+  const patchDraft = (body: Record<string, unknown>) =>
+    api("/api/drafts", { method: "PATCH", body: JSON.stringify({ id: draft.id, ...body }) });
+
   const act = (action: string, label: string, extra: Record<string, unknown> = {}) =>
     run(label, async () => {
-      await api("/api/drafts", {
-        method: "PATCH",
-        body: JSON.stringify({ id: draft.id, action, ...extra }),
-      });
+      await patchDraft({ action, ...extra });
+      await refresh();
+    });
+
+  // Approve is restricted to reviewer roles, so a sender who edits the draft
+  // must have that edit saved regardless of whether the approve step itself
+  // is then rejected for their role — otherwise the edit is silently lost.
+  const approve = () =>
+    run("Approved", async () => {
+      if (dirty) await patchDraft({ action: "save", subject, body });
+      await patchDraft({ action: "approve" });
       await refresh();
     });
 
@@ -307,7 +317,7 @@ function DraftPanel({ draft, lead, settings, busy, refresh, run, flash, onClose 
         <button
           className="secondary-button"
           disabled={busy || !gate.allowed || draft.status === "approved"}
-          onClick={() => act("approve", "Approved", dirty ? { subject, body } : {})}
+          onClick={approve}
         >
           Approve
         </button>
