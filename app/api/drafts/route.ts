@@ -3,8 +3,12 @@ import { getSql, jsonParam } from "@/lib/db";
 import { draftGenerateSchema, draftPatchSchema, settingsSchema, type DraftAction } from "@/lib/validation";
 import { toCampaign, toDraft, toLead } from "@/lib/mappers";
 import { planDrafts } from "@/lib/drafting";
-import { DEFAULT_SETTINGS, type DraftStatus, type EmailStage } from "@/lib/types";
+import { channelGate } from "@/lib/channels";
+import { DEFAULT_SETTINGS, type Channel, type DraftStatus, type EmailStage } from "@/lib/types";
 import { authenticateRequest, forbidden, hasRole, unauthorized, type AuthContext, type WorkspaceRole } from "@/lib/auth";
+
+/** Actions that put a message in front of (or in the hands of) the prospect — the compliance gate must hold for these. */
+const GATED_ACTIONS: DraftAction[] = ["approve", "mark_sent"];
 
 export const maxDuration = 60;
 
@@ -64,6 +68,16 @@ export async function PATCH(request: Request) {
     const sql = getSql();
     const [existing] = await sql`SELECT * FROM drafts WHERE id = ${input.id} AND workspace_id = ${auth.workspaceId}`;
     if (!existing) return NextResponse.json({ error: "Draft not found" }, { status: 404 });
+
+    // The UI only disables Approve/Mark sent when the gate blocks a lead — enforce
+    // it here too, since a stale panel or a direct call must not bypass it.
+    if (GATED_ACTIONS.includes(input.action) && existing.lead_id) {
+      const [leadRow] = await sql`SELECT * FROM leads WHERE id = ${existing.lead_id} AND workspace_id = ${auth.workspaceId}`;
+      const gate = leadRow ? channelGate(toLead(leadRow), existing.channel as Channel) : null;
+      if (gate && !gate.allowed) {
+        return NextResponse.json({ error: `Blocked: ${gate.reason}` }, { status: 409 });
+      }
+    }
 
     const status: DraftStatus =
       input.action === "save" ? (input.status ?? existing.status) : ACTION_STATUS[input.action];
@@ -150,6 +164,8 @@ export async function POST(request: Request) {
     const existingRows = await sql`SELECT id, lead_id, channel, type, status FROM drafts
       WHERE workspace_id = ${auth.workspaceId} AND lead_id IN ${sql(leads.map((lead) => lead.id))}`;
     const existingKeys = new Set(existingRows.map((row) => `${row.lead_id}:${row.channel}:${row.type}`));
+    const existingStatus = new Map(existingRows.map((row) => [`${row.lead_id}:${row.channel}:${row.type}`, row.status as DraftStatus]));
+    const FINAL_STATUSES: DraftStatus[] = ["sent", "replied", "qualified"];
 
     // Plan in small batches so a large selection does not fan out model calls.
     const planned: { leadId: string; plans: Awaited<ReturnType<typeof planDrafts>> }[] = [];
@@ -176,7 +192,13 @@ export async function POST(request: Request) {
             skipped += 1;
             continue;
           }
-          // Never overwrite something already sent or replied to.
+          // Never overwrite something already sent or replied to — and never insert
+          // a second draft alongside it either.
+          const currentStatus = existingStatus.get(key);
+          if (currentStatus && FINAL_STATUSES.includes(currentStatus)) {
+            skipped += 1;
+            continue;
+          }
           await sql`DELETE FROM drafts WHERE workspace_id = ${auth.workspaceId} AND lead_id = ${entry.leadId}
             AND channel = ${plan.channel} AND type = ${plan.type}
             AND status NOT IN ('sent', 'replied', 'qualified')`;

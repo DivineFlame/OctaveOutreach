@@ -4,7 +4,7 @@ import { leadInputSchema, leadPatchSchema } from "@/lib/validation";
 import { toLead } from "@/lib/mappers";
 import { channelGate } from "@/lib/channels";
 import { authenticateRequest, forbidden, hasRole, unauthorized } from "@/lib/auth";
-import type { Lead } from "@/lib/types";
+import type { Channel, Lead } from "@/lib/types";
 
 /** `found` once an address exists, `verified` once it has been checked. */
 function nextEmailStage(lead: Lead): Lead["emailStage"] {
@@ -94,17 +94,19 @@ export async function PATCH(request: Request) {
       WHERE id = ${input.id} AND workspace_id = ${auth.workspaceId} RETURNING *`;
     const lead = toLead(row);
 
-    // Do Not Contact holds every draft that has not gone out yet.
-    if (lead.doNotContact && !existing.doNotContact) {
-      await sql`UPDATE drafts SET status = 'held', updated_at = NOW()
-        WHERE workspace_id = ${auth.workspaceId} AND lead_id = ${lead.id}
-          AND status IN ('needs_review', 'approved', 'ready', 'waiting_consent', 'saved_to_drafts')`;
-    }
-    // Recording consent releases a WhatsApp draft that was waiting for it.
-    if (!lead.doNotContact && channelGate(lead, "whatsapp").allowed) {
-      await sql`UPDATE drafts SET status = 'needs_review', updated_at = NOW()
-        WHERE workspace_id = ${auth.workspaceId} AND lead_id = ${lead.id}
-          AND channel = 'whatsapp' AND status = 'waiting_consent'`;
+    // Re-check every open draft against the compliance gate, not just on a
+    // Do Not Contact flip — an opt-out or a revoked consent basis must hold
+    // drafts just as reliably, on whichever channel it affects.
+    const openDrafts = await sql`SELECT id, channel, status FROM drafts
+      WHERE workspace_id = ${auth.workspaceId} AND lead_id = ${lead.id}
+        AND status IN ('needs_review', 'approved', 'ready', 'waiting_consent', 'saved_to_drafts')`;
+    for (const draftRow of openDrafts) {
+      const gate = channelGate(lead, draftRow.channel as Channel);
+      if (!gate.allowed) {
+        await sql`UPDATE drafts SET status = 'held', updated_at = NOW() WHERE id = ${draftRow.id}`;
+      } else if (draftRow.status === "waiting_consent") {
+        await sql`UPDATE drafts SET status = 'needs_review', updated_at = NOW() WHERE id = ${draftRow.id}`;
+      }
     }
 
     await sql`INSERT INTO activity_log (workspace_id, actor_user_id, entity_type, entity_id, action, metadata)
